@@ -4,8 +4,8 @@ const cors = require("cors");
 const helmet = require("helmet");
 const { connectDB, initSettings, User } = require("./lib/db");
 const bcrypt = require("bcryptjs");
-
 const app = express();
+app.set("trust proxy", 1);
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 app.use(cors({
