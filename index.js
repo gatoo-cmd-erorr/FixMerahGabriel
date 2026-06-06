@@ -8,9 +8,12 @@ const bcrypt = require("bcryptjs");
 const app = express();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
-app.use(helmet());
 app.use(cors({
-  origin: "*",
+  origin: [
+    "https://fix-merah-free.pages.dev",
+    "http://localhost:5173",
+    "*"
+  ],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-api-key", "x-tg-init-data"],
 }));
