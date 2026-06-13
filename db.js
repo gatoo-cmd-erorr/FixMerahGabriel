@@ -9,30 +9,31 @@ async function connectDB() {
     serverSelectionTimeoutMS: 8000,
   });
   connected = true;
-  console.log("MongoDB connected");
+  console.log("✅ MongoDB connected");
 }
 
 // ── SCHEMAS ────────────────────────────────────────────────────────────────────
 
 const UserSchema = new mongoose.Schema({
-  username: { type: String, unique: true, required: true },
+  username: { type: String, unique: true, required: true, lowercase: true, trim: true },
   password: { type: String, required: true },
   telegram_id: { type: String, default: "" },
   role: { type: String, enum: ["free","premium","vip","owner","superowner"], default: "free" },
-  status: { type: String, enum: ["active","inactive"], default: "active" },
+  status: { type: String, enum: ["active","inactive","blocked"], default: "active" },
   expiry: { type: Date, default: null },
   total_fix: { type: Number, default: 0 },
   daily_fix_count: { type: Number, default: 0 },
   daily_fix_date: { type: String, default: "" },
-  // Coin system
-  coin_balance: { type: Number, default: 0 },
+  coin_balance: { type: Number, default: 0, min: 0 },
   total_coins_earned: { type: Number, default: 0 },
   total_coins_spent: { type: Number, default: 0 },
-  // Anti-cheat
   device_fingerprint: { type: String, default: null },
   registration_ip: { type: String, default: null },
   referred_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-  // Meta
+  blocked_reason: { type: String, default: null },
+  blocked_at: { type: Date, default: null },
+  notified_h1: { type: Boolean, default: false },
+  notified_h3: { type: Boolean, default: false },
   created_at: { type: Date, default: Date.now },
   created_by: { type: String, default: "system" },
   last_login: { type: Date, default: null },
@@ -40,7 +41,7 @@ const UserSchema = new mongoose.Schema({
 
 const ReferralSchema = new mongoose.Schema({
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  invite_code: String,
+  invite_code: { type: String, unique: true },
   invited: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   confirmed_invited: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   invited_at: [{ type: Date }],
@@ -52,7 +53,7 @@ const ReferralSchema = new mongoose.Schema({
 
 const CoinTransactionSchema = new mongoose.Schema({
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  type: { type: String, enum: ["earn", "spend"], required: true },
+  type: { type: String, enum: ["earn","spend"], required: true },
   amount: { type: Number, required: true },
   reason: { type: String, required: true },
   ref_user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
@@ -65,7 +66,7 @@ const CoinTransactionSchema = new mongoose.Schema({
 const MandatoryChannelSchema = new mongoose.Schema({
   name: { type: String, required: true },
   username: { type: String, required: true },
-  type: { type: String, enum: ["channel", "group"], default: "channel" },
+  type: { type: String, enum: ["channel","group"], default: "channel" },
   url: { type: String, required: true },
   is_active: { type: Boolean, default: true },
   order_index: { type: Number, default: 0 },
@@ -159,8 +160,7 @@ function genTrackingId() {
   const now = new Date();
   const pad = (n, l = 2) => String(n).padStart(l, "0");
   const d = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
-  const r = String(Math.floor(Math.random() * 9000) + 1000);
-  return `GABRIEL-${d}-${r}`;
+  return `GABRIEL-${d}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
 }
 
 function genBatchId() {
@@ -176,8 +176,10 @@ function normalizeNomor(raw) {
 }
 
 async function getSetting(key, def = null) {
-  const s = await Setting.findOne({ key });
-  return s ? s.value : def;
+  try {
+    const s = await Setting.findOne({ key });
+    return s ? s.value : def;
+  } catch { return def; }
 }
 
 async function setSetting(key, value, by = "system") {
@@ -201,7 +203,8 @@ async function initSettings() {
     api_url: "https://fix-merahv1.vercel.app",
     api_key: "beckk001",
     mandatory_join_enabled: false,
-    bot_token: "",
+    bot_token: "8832683954:AAFg3516SCa0Wvy-LNWxuGjXXJ-hE7UJPaE",
+    backup_chat_id: "7971988947",
   };
   for (const [k, v] of Object.entries(defaults)) {
     const ex = await Setting.findOne({ key: k });

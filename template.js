@@ -1,89 +1,75 @@
+// routes/template.js
 const router = require("express").Router();
-const bcrypt = require("bcryptjs");
-const { authMiddleware } = require("../middleware/auth");
-const { User, FixHistory, Referral, getSetting, wibDateStr } = require("../lib/db");
+const { authMiddleware } = require("./auth_middleware");
+const { isOwner } = require("./auth_middleware");
+const { Template } = require("./db");
 
-// GET /user/me
-router.get("/me", authMiddleware, async (req, res) => {
+// GET /template/random — 1 template acak (semua user)
+router.get("/random", authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select("-password");
-    const referral = await Referral.findOne({ user_id: user._id });
-    return res.json({
-      ...user.toObject(),
-      bonus_checks: referral?.bonus_checks || 0,
-      total_invited: referral?.total_invited || 0,
-      invite_code: referral?.invite_code || `REF_${user._id}`,
-    });
+    const templates = await Template.find({});
+    if (!templates.length) return res.status(404).json({ message: "Tidak ada template" });
+    const t = templates[Math.floor(Math.random() * templates.length)];
+    return res.json(t);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
 });
 
-// GET /user/home-stats
-router.get("/home-stats", authMiddleware, async (req, res) => {
+// GET /template/list — owner only
+router.get("/list", authMiddleware, isOwner, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
-    const referral = await Referral.findOne({ user_id: user._id });
-
-    const freeLimit = await getSetting("free_daily_limit", 3);
-    const isUnlimited = ["premium", "vip", "owner", "superowner"].includes(user.role);
-
-    // Reset daily jika beda hari
-    const todayWib = wibDateStr();
-    if (user.daily_fix_date !== todayWib) {
-      user.daily_fix_count = 0;
-      user.daily_fix_date = todayWib;
-      await user.save();
-    }
-
-    const remaining = isUnlimited ? 999 : Math.max(0, freeLimit - user.daily_fix_count);
-
-    // Fix bulan ini
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const monthFix = await FixHistory.countDocuments({
-      user_id: user._id,
-      status: "sent",
-      _id: { $gte: require("mongoose").Types.ObjectId.createFromTime(startOfMonth.getTime() / 1000) }
-    });
-
-    return res.json({
-      username: user.username,
-      role: user.role,
-      total_fix: user.total_fix,
-      daily_used: user.daily_fix_count,
-      daily_limit: isUnlimited ? null : freeLimit,
-      remaining,
-      is_unlimited: isUnlimited,
-      bonus_checks: referral?.bonus_checks || 0,
-      total_invited: referral?.total_invited || 0,
-      month_fix: monthFix,
-      status: user.status,
-      reset_label: "00:00 WIB",
-    });
+    const templates = await Template.find({}).sort({ order_index: 1, _id: -1 });
+    return res.json(templates);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
 });
 
-// POST /user/change-password
-router.post("/change-password", authMiddleware, async (req, res) => {
+// POST /template/add
+router.post("/add", authMiddleware, isOwner, async (req, res) => {
   try {
-    const { old_password, new_password } = req.body;
-    if (!old_password || !new_password)
+    const { name, to_email, subject, body, is_active } = req.body;
+    if (!name || !to_email || !subject || !body)
       return res.status(400).json({ message: "Semua field wajib diisi" });
-    if (new_password.length < 6)
-      return res.status(400).json({ message: "Password minimal 6 karakter" });
+    if (is_active) await Template.updateMany({}, { $set: { is_active: false } });
+    const t = await Template.create({
+      name, to_email, subject, body,
+      is_active: !!is_active,
+      created_by: req.user.username,
+    });
+    return res.json(t);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
 
-    const user = await User.findById(req.user._id);
-    const match = await bcrypt.compare(old_password, user.password);
-    if (!match)
-      return res.status(400).json({ message: "Password lama salah" });
+// POST /template/:id/set-active
+router.post("/:id/set-active", authMiddleware, isOwner, async (req, res) => {
+  try {
+    await Template.updateMany({}, { $set: { is_active: false } });
+    await Template.findByIdAndUpdate(req.params.id, { is_active: true });
+    return res.json({ message: "Template diaktifkan" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
 
-    user.password = await bcrypt.hash(new_password, 12);
-    await user.save();
-    return res.json({ message: "Password berhasil diubah" });
+// PUT /template/:id
+router.put("/:id", authMiddleware, isOwner, async (req, res) => {
+  try {
+    const t = await Template.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    return res.json(t);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// DELETE /template/:id
+router.delete("/:id", authMiddleware, isOwner, async (req, res) => {
+  try {
+    await Template.findByIdAndDelete(req.params.id);
+    return res.json({ message: "Template dihapus" });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

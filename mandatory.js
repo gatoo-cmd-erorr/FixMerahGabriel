@@ -1,217 +1,182 @@
-const mongoose = require("mongoose");
+const router = require("express").Router();
+const https = require("https");
+const { authMiddleware, isOwner } = require("./auth_middleware");
+const { MandatoryChannel, getSetting } = require("./db");
 
-let connected = false;
+// ── Cache verifikasi (5 menit per user) ──────────────────────────────────────
+const verifyCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 menit
 
-async function connectDB() {
-  if (connected) return;
-  await mongoose.connect(process.env.MONGODB_URI, {
-    dbName: process.env.MONGODB_DB || "fixmerah",
-    serverSelectionTimeoutMS: 8000,
-  });
-  connected = true;
-  console.log("MongoDB connected");
-}
+function getCacheKey(telegramId) { return `verify_${telegramId}`; }
 
-// ── SCHEMAS ────────────────────────────────────────────────────────────────────
-
-const UserSchema = new mongoose.Schema({
-  username: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
-  telegram_id: { type: String, default: "" },
-  role: { type: String, enum: ["free","premium","vip","owner","superowner"], default: "free" },
-  status: { type: String, enum: ["active","inactive"], default: "active" },
-  expiry: { type: Date, default: null },
-  total_fix: { type: Number, default: 0 },
-  daily_fix_count: { type: Number, default: 0 },
-  daily_fix_date: { type: String, default: "" },
-  // Coin system
-  coin_balance: { type: Number, default: 0 },
-  total_coins_earned: { type: Number, default: 0 },
-  total_coins_spent: { type: Number, default: 0 },
-  // Anti-cheat
-  device_fingerprint: { type: String, default: null },
-  registration_ip: { type: String, default: null },
-  referred_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-  // Meta
-  created_at: { type: Date, default: Date.now },
-  created_by: { type: String, default: "system" },
-  last_login: { type: Date, default: null },
-});
-
-const ReferralSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  invite_code: String,
-  invited: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-  confirmed_invited: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-  invited_at: [{ type: Date }],
-  total_invited: { type: Number, default: 0 },
-  confirmed_count: { type: Number, default: 0 },
-  bonus_checks: { type: Number, default: 0 },
-  referred_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-});
-
-const CoinTransactionSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  type: { type: String, enum: ["earn", "spend"], required: true },
-  amount: { type: Number, required: true },
-  reason: { type: String, required: true },
-  ref_user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-  ip_address: { type: String, default: null },
-  device_fingerprint: { type: String, default: null },
-  timestamp: { type: Date, default: Date.now },
-  is_suspicious: { type: Boolean, default: false },
-});
-
-const MandatoryChannelSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  username: { type: String, required: true },
-  type: { type: String, enum: ["channel", "group"], default: "channel" },
-  url: { type: String, required: true },
-  is_active: { type: Boolean, default: true },
-  order_index: { type: Number, default: 0 },
-  added_by: { type: String, default: "admin" },
-  added_at: { type: Date, default: Date.now },
-});
-
-const GmailSchema = new mongoose.Schema({
-  email: { type: String, unique: true, required: true },
-  app_password: { type: String, required: true },
-  is_active: { type: Boolean, default: true },
-  status: { type: String, default: "ok" },
-  total_sent: { type: Number, default: 0 },
-  last_used: { type: Date, default: null },
-  added_by: { type: String, default: "admin" },
-  imap_last_uid: { type: Number, default: 0 },
-});
-
-const TemplateSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  to_email: { type: String, required: true },
-  subject: { type: String, required: true },
-  body: { type: String, required: true },
-  is_active: { type: Boolean, default: false },
-  order_index: { type: Number, default: 0 },
-  created_by: { type: String, default: "admin" },
-  created_at: { type: Date, default: Date.now },
-});
-
-const FixHistorySchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  username: String,
-  nomor: String,
-  nomor_normalized: String,
-  template_id: { type: mongoose.Schema.Types.ObjectId, ref: "Template" },
-  template_name: String,
-  gmail_sender: String,
-  status: { type: String, enum: ["sent","failed"], default: "sent" },
-  tracking_id: String,
-  batch_id: String,
-  reply_detected: { type: Boolean, default: false },
-  appeal_id: { type: String, default: null },
-  timestamp_wib: String,
-  error_message: { type: String, default: null },
-  source: { type: String, default: "fix" },
-});
-
-const SettingSchema = new mongoose.Schema({
-  key: { type: String, unique: true, required: true },
-  value: mongoose.Schema.Types.Mixed,
-  updated_by: { type: String, default: "system" },
-  updated_at: { type: Date, default: Date.now },
-});
-
-const BroadcastSchema = new mongoose.Schema({
-  target: { type: String, enum: ["all","premium","free"] },
-  message: String,
-  sent_count: { type: Number, default: 0 },
-  failed_count: { type: Number, default: 0 },
-  total_count: { type: Number, default: 0 },
-  created_by: String,
-  created_at: { type: Date, default: Date.now },
-  status: { type: String, default: "done" },
-});
-
-// ── Models ─────────────────────────────────────────────────────────────────────
-const User = mongoose.models.User || mongoose.model("User", UserSchema);
-const Referral = mongoose.models.Referral || mongoose.model("Referral", ReferralSchema);
-const CoinTransaction = mongoose.models.CoinTransaction || mongoose.model("CoinTransaction", CoinTransactionSchema);
-const MandatoryChannel = mongoose.models.MandatoryChannel || mongoose.model("MandatoryChannel", MandatoryChannelSchema);
-const Gmail = mongoose.models.Gmail || mongoose.model("Gmail", GmailSchema);
-const Template = mongoose.models.Template || mongoose.model("Template", TemplateSchema);
-const FixHistory = mongoose.models.FixHistory || mongoose.model("FixHistory", FixHistorySchema);
-const Setting = mongoose.models.Setting || mongoose.model("Setting", SettingSchema);
-const Broadcast = mongoose.models.Broadcast || mongoose.model("Broadcast", BroadcastSchema);
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-function wibNow() {
-  return new Date().toLocaleString("id-ID", {
-    timeZone: "Asia/Jakarta",
-    day: "2-digit", month: "long", year: "numeric",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-}
-
-function wibDateStr() {
-  return new Date().toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta" });
-}
-
-function genTrackingId() {
-  const now = new Date();
-  const pad = (n, l = 2) => String(n).padStart(l, "0");
-  const d = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`;
-  const r = String(Math.floor(Math.random() * 9000) + 1000);
-  return `GABRIEL-${d}-${r}`;
-}
-
-function genBatchId() {
-  return `BATCH-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
-}
-
-function normalizeNomor(raw) {
-  if (!raw) return "";
-  let n = String(raw).replace(/[\s\-().+]/g, "");
-  if (n.startsWith("0")) n = "62" + n.slice(1);
-  if (!n.startsWith("+")) n = "+" + n;
-  return n;
-}
-
-async function getSetting(key, def = null) {
-  const s = await Setting.findOne({ key });
-  return s ? s.value : def;
-}
-
-async function setSetting(key, value, by = "system") {
-  await Setting.updateOne(
-    { key },
-    { $set: { value, updated_by: by, updated_at: new Date() } },
-    { upsert: true }
-  );
-}
-
-async function initSettings() {
-  const defaults = {
-    bot_name: "Fix Merah",
-    maintenance_mode: false,
-    fix_cooldown_ms: 180000,
-    free_daily_limit: 3,
-    reset_hour_wib: 0,
-    fix_gratis_open: true,
-    referral_count_needed: 3,
-    referral_bonus_fix: 2,
-    api_url: "https://fix-merahv1.vercel.app",
-    api_key: "beckk001",
-    mandatory_join_enabled: false,
-    bot_token: "",
-  };
-  for (const [k, v] of Object.entries(defaults)) {
-    const ex = await Setting.findOne({ key: k });
-    if (!ex) await setSetting(k, v);
+function getCache(telegramId) {
+  const key = getCacheKey(telegramId);
+  const cached = verifyCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.ts > CACHE_TTL) {
+    verifyCache.delete(key);
+    return null;
   }
+  return cached.data;
 }
 
-module.exports = {
-  connectDB, User, Referral, CoinTransaction, MandatoryChannel,
-  Gmail, Template, FixHistory, Setting, Broadcast,
-  wibNow, wibDateStr, genTrackingId, genBatchId,
-  normalizeNomor, getSetting, setSetting, initSettings,
-};
+function setCache(telegramId, data) {
+  verifyCache.set(getCacheKey(telegramId), { ts: Date.now(), data });
+}
+
+// ── Telegram API: getChatMember ───────────────────────────────────────────────
+function checkTelegramMembership(botToken, chatId, userId) {
+  return new Promise((resolve) => {
+    const url = `https://api.telegram.org/bot${botToken}/getChatMember?chat_id=${encodeURIComponent(chatId)}&user_id=${userId}`;
+    https.get(url, (resp) => {
+      let data = "";
+      resp.on("data", (chunk) => (data += chunk));
+      resp.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          if (!json.ok) return resolve(false);
+          const status = json.result?.status;
+          // member, administrator, creator = joined
+          resolve(["member", "administrator", "creator"].includes(status));
+        } catch {
+          resolve(false);
+        }
+      });
+    }).on("error", () => resolve(false));
+  });
+}
+
+// ── GET /mandatory/list ───────────────────────────────────────────────────────
+router.get("/list", async (req, res) => {
+  try {
+    const enabled = await getSetting("mandatory_join_enabled", false);
+    if (!enabled) return res.json({ enabled: false, channels: [] });
+    const channels = await MandatoryChannel.find({ is_active: true })
+      .sort({ order_index: 1 })
+      .select("name username type url order_index");
+    return res.json({ enabled: true, channels });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// ── POST /mandatory/verify ────────────────────────────────────────────────────
+router.post("/verify", authMiddleware, async (req, res) => {
+  try {
+    const enabled = await getSetting("mandatory_join_enabled", false);
+    if (!enabled) return res.json({ all_joined: true, missing: [] });
+
+    const telegramId = req.body.telegram_id || req.user.telegram_id;
+    if (!telegramId) return res.json({ all_joined: true, missing: [] });
+
+    // Cek cache
+    const cached = getCache(telegramId);
+    if (cached) return res.json(cached);
+
+    const botToken = await getSetting("bot_token", "");
+    if (!botToken) return res.json({ all_joined: true, missing: [] });
+
+    const channels = await MandatoryChannel.find({ is_active: true }).sort({ order_index: 1 });
+    if (!channels.length) return res.json({ all_joined: true, missing: [] });
+
+    const missing = [];
+    for (const ch of channels) {
+      const joined = await checkTelegramMembership(botToken, ch.username, telegramId);
+      if (!joined) missing.push({
+        _id: ch._id,
+        name: ch.name,
+        username: ch.username,
+        url: ch.url,
+        type: ch.type,
+      });
+    }
+
+    const result = { all_joined: missing.length === 0, missing };
+    setCache(telegramId, result);
+    return res.json(result);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// ── ADMIN routes ──────────────────────────────────────────────────────────────
+
+// GET /admin/mandatory/list
+router.get("/admin/list", authMiddleware, isOwner, async (req, res) => {
+  try {
+    const channels = await MandatoryChannel.find({}).sort({ order_index: 1 });
+    return res.json(channels);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// POST /admin/mandatory/add
+router.post("/admin/add", authMiddleware, isOwner, async (req, res) => {
+  try {
+    const count = await MandatoryChannel.countDocuments();
+    if (count >= 10) return res.status(400).json({ message: "Maksimal 10 channel" });
+
+    const { name, username, type, url } = req.body;
+    if (!name || !username || !url)
+      return res.status(400).json({ message: "name, username, url wajib" });
+
+    const ch = await MandatoryChannel.create({
+      name,
+      username: username.startsWith("@") ? username : `@${username}`,
+      type: type || "channel",
+      url,
+      is_active: true,
+      order_index: count,
+      added_by: req.user.username,
+      added_at: new Date(),
+    });
+
+    // Clear semua cache saat ada perubahan channel
+    verifyCache.clear();
+    return res.json(ch);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// DELETE /admin/mandatory/:id
+router.delete("/admin/:id", authMiddleware, isOwner, async (req, res) => {
+  try {
+    await MandatoryChannel.findByIdAndDelete(req.params.id);
+    verifyCache.clear();
+    return res.json({ message: "Channel dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// PUT /admin/mandatory/:id/toggle
+router.put("/admin/:id/toggle", authMiddleware, isOwner, async (req, res) => {
+  try {
+    const ch = await MandatoryChannel.findById(req.params.id);
+    if (!ch) return res.status(404).json({ message: "Channel tidak ditemukan" });
+    ch.is_active = !ch.is_active;
+    await ch.save();
+    verifyCache.clear();
+    return res.json(ch);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// PUT /admin/mandatory/reorder
+router.put("/admin/reorder", authMiddleware, isOwner, async (req, res) => {
+  try {
+    const { order } = req.body; // array of { _id, order_index }
+    for (const item of order) {
+      await MandatoryChannel.findByIdAndUpdate(item._id, { order_index: item.order_index });
+    }
+    verifyCache.clear();
+    return res.json({ message: "Urutan disimpan" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+module.exports = router;

@@ -1,67 +1,55 @@
 const router = require("express").Router();
-const nodemailer = require("nodemailer");
-const { authMiddleware, isOwner } = require("../middleware/auth");
-const { Gmail } = require("../lib/db");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
+const { User } = require("./db");
 
-// GET /gmail/list
-router.get("/list", authMiddleware, isOwner, async (req, res) => {
+const loginLimit = rateLimit({ windowMs: 60000, max: 10, message: { message: "Terlalu banyak percobaan login" } });
+
+// POST /auth/login
+router.post("/login", loginLimit, async (req, res) => {
   try {
-    const list = await Gmail.find({}).sort({ _id: -1 });
-    return res.json(list);
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
+    const { username, password } = req.body;
+    if (!username || !password)
+      return res.status(400).json({ message: "Username dan password wajib diisi" });
 
-// POST /gmail/add
-router.post("/add", authMiddleware, isOwner, async (req, res) => {
-  try {
-    const { email, app_password } = req.body;
-    if (!email || !app_password)
-      return res.status(400).json({ message: "Email dan app password wajib" });
-    const exists = await Gmail.findOne({ email });
-    if (exists) return res.status(400).json({ message: "Email sudah terdaftar" });
-    const g = await Gmail.create({ email, app_password, added_by: req.user.username });
-    return res.json(g);
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    if (!user)
+      return res.status(401).json({ message: "Username atau password salah" });
 
-// DELETE /gmail/:id
-router.delete("/:id", authMiddleware, isOwner, async (req, res) => {
-  try {
-    await Gmail.findByIdAndDelete(req.params.id);
-    return res.json({ message: "Gmail dihapus" });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
+    if (user.status !== "active")
+      return res.status(401).json({ message: "Akun tidak aktif" });
 
-// GET /gmail/:id/health — test SMTP
-router.get("/:id/health", authMiddleware, isOwner, async (req, res) => {
-  try {
-    const g = await Gmail.findById(req.params.id);
-    if (!g) return res.status(404).json({ message: "Gmail tidak ditemukan" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match)
+      return res.status(401).json({ message: "Username atau password salah" });
 
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com", port: 587, secure: false,
-      auth: { user: g.email, pass: g.app_password },
-      tls: { rejectUnauthorized: false },
+    // Update last login
+    user.last_login = new Date();
+    await user.save();
+
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "30m" }
+    );
+
+    return res.json({
+      token,
+      user: {
+        _id: user._id,
+        username: user.username,
+        telegram_id: user.telegram_id,
+        role: user.role,
+        status: user.status,
+        expiry: user.expiry,
+        total_fix: user.total_fix,
+        created_at: user.created_at,
+      },
     });
-
-    try {
-      await transporter.verify();
-      g.status = "ok";
-      await g.save();
-      return res.json({ ok: true, message: "SMTP OK ✅", email: g.email });
-    } catch (e) {
-      g.status = "error";
-      await g.save();
-      return res.json({ ok: false, message: `SMTP Error: ${e.message}`, email: g.email });
-    }
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    console.error(e);
+    res.status(500).json({ message: "Server error" });
   }
 });
 

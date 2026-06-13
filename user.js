@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const bcrypt = require("bcryptjs");
-const { authMiddleware } = require("../middleware/auth");
-const { User, FixHistory, Referral, getSetting, wibDateStr } = require("../lib/db");
+const { authMiddleware } = require("./auth_middleware");
+const { User, FixHistory, Referral, getSetting, wibDateStr } = require("./db");
 
 // GET /user/me
 router.get("/me", authMiddleware, async (req, res) => {
