@@ -203,7 +203,7 @@ async function initSettings() {
     api_url: "https://fix-merahv1.vercel.app",
     api_key: "beckk001",
     mandatory_join_enabled: false,
-    bot_token: "",
+    bot_token: process.env.BOT_TOKEN || "",
     backup_chat_id: "7971988947",
   };
   for (const [k, v] of Object.entries(defaults)) {
