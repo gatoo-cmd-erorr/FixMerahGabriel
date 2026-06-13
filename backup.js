@@ -5,7 +5,7 @@ const {
   User, Referral, Gmail, Template, FixHistory,
   Setting, Broadcast, CoinTransaction, MandatoryChannel,
   getSetting, wibNow
-} = require("../db");
+} = require("./db");
 
 // ── Kirim file ZIP ke Telegram ─────────────────────────────────────────────────
 async function sendBackupToTelegram(botToken, chatId, zipBuffer, filename, caption) {

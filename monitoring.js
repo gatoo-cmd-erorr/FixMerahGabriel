@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const https = require("https");
 const { authMiddleware, isOwner } = require("./auth_middleware");
-const { User, FixHistory, getSetting, wibNow } = require("../db");
+const { User, FixHistory, getSetting, wibNow } = require("./db");
 
 // ── Kirim pesan Telegram ──────────────────────────────────────────────────────
 function sendTelegramMessage(botToken, chatId, text) {
